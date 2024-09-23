@@ -189,36 +189,55 @@ async function playGamesSubMenu(accounts) {
         }
         break;
 
-      case 3:
-        // Play Swipe Coin for all accounts
-        for (const account of accounts) {
-          console.log(`\n⏳ Playing Swipe Coin for ${account.username}`.yellow);
-          await performActionWithTokenRefresh(account, async (account) => {
+case 3:
+  // Define the list of task IDs to skip
+  const skipTasks = [2]; // Agrega aquí los IDs de las tareas que deseas omitir
+
+  // Complete Tasks for all accounts
+  for (const account of accounts) {
+    console.log(`\nCompleting Tasks for ${account.username}`.yellow);
+    await performActionWithTokenRefresh(account, async (account) => {
+      try {
+        const tasks = await getTasks(account.access_token);
+        for (const task of tasks) {
+          // Verificar si el ID de la tarea está en la lista de tareas a omitir
+          if (skipTasks.includes(task.id)) {
+            console.log(`⚠️  Task ${task.id} - ${task.title} can't be completed. Please do it manually.`.red);
+            continue; // Omitir esta tarea
+          }
+
+          if (!task.is_completed) {
+            console.log(`🔄 Completing Task ${task.id} - ${task.title} for ${account.username}...`.blue);
+            await sleep(3000); // Wait 3 seconds before completing
             try {
-              if (await canPlaySwipeCoin(account.access_token)) {
-                console.log('🔄 Waiting 5 seconds before playing Swipe Coin...'.blue);
-                await sleep(5000);
-                console.log('🎮 Playing Swipe Coin. Wait 1 minute to claim points...'.yellow);
-                await sleep(60000);
-                const coins = Math.floor(Math.random() * (600 - 250 + 1)) + 250;
-                const swipeCoinResult = await playSwipeCoin(account.access_token, coins);
-                if (swipeCoinResult) {
-                  const updatedUserInfo = await getUserInfo(account.access_token, account.user_id);
-                  account.rating = updatedUserInfo.rating;
-                  console.log(`✅ Swipe Coin played successfully for ${account.username}. Your points are now ${account.rating}`.green);
-                } else {
-                  console.log(`❌ Failed to play Swipe Coin for ${account.username}.`.red);
-                }
-              } else {
-                console.log(`⚠️  You cannot play Swipe Coin at this time for ${account.username}.`.red);
+              const result = await completeTask(account.access_token, task.id);
+              if (result.is_completed) {
+                console.log(`✅ Task ${task.id} - ${task.title} Completed for ${account.username}.`.green);
               }
             } catch (error) {
-              handleGameError('Swipe Coin', error, account.username);
+              if (error.response && error.response.status === 400) {
+                console.log(`⚠️  The task ${task.id} - ${task.title} can't be completed for ${account.username}, please complete it manually`.red);
+              } else {
+                console.log(`❌ Error completing Task ${task.id} for ${account.username}: ${error.message}`.red);
+              }
             }
-          });
-          await sleep(1000); // Add 1-second delay between accounts
+          } else {
+            console.log(`🔄 Task ${task.id} - ${task.title} is already completed for ${account.username}.`.yellow);
+          }
         }
-        break;
+
+        // Get updated user info after completing tasks
+        const updatedUserInfo = await getUserInfo(account.access_token, account.user_id);
+        account.rating = updatedUserInfo.rating;
+        console.log(`✅ Your points are now: ${account.rating}`.green);
+
+      } catch (error) {
+        console.log(`❌ Error completing tasks for ${account.username}: ${error.message}`.red);
+      }
+    });
+    await sleep(1000); // Add 1-second delay between accounts
+  }
+  break;
 
       case 4:
         // Play Durov Game for all accounts
@@ -303,7 +322,7 @@ async function playGamesSubMenu(accounts) {
     for (let i = 0; i < accountsInitData.length; i++) {
       const init_data = accountsInitData[i];
       try {
-        await sleep(2000); // Wait 2 seconds before processing the next account
+        await sleep(500); // Wait 2 seconds before processing the next account
 
         const { access_token, user_id } = await getNewToken(init_data);
         tokens.push(access_token); // Save the token to tokens array
