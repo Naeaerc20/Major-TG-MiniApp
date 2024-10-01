@@ -6,6 +6,7 @@ const {
   performCheckIn,
   getTasks,
   completeTask,
+  completeTaskWithPayload,
   canPlayHoldTheCoin,
   playHoldTheCoin,
   canPlayRoulette,
@@ -108,7 +109,7 @@ async function playGamesSubMenu(accounts) {
   const gameOptions = [
     '💰 Hold The Coin',
     '🎲 Roulette',
-    '🪙  Swipe Coin',
+    '🪙 Swipe Coin',
     '🎮 Durov Game',
     '🔙 Back to Main Menu',
   ];
@@ -189,55 +190,36 @@ async function playGamesSubMenu(accounts) {
         }
         break;
 
-case 3:
-  // Define the list of task IDs to skip
-  const skipTasks = [2]; // Agrega aquí los IDs de las tareas que deseas omitir
-
-  // Complete Tasks for all accounts
-  for (const account of accounts) {
-    console.log(`\nCompleting Tasks for ${account.username}`.yellow);
-    await performActionWithTokenRefresh(account, async (account) => {
-      try {
-        const tasks = await getTasks(account.access_token);
-        for (const task of tasks) {
-          // Verificar si el ID de la tarea está en la lista de tareas a omitir
-          if (skipTasks.includes(task.id)) {
-            console.log(`⚠️  Task ${task.id} - ${task.title} can't be completed. Please do it manually.`.red);
-            continue; // Omitir esta tarea
-          }
-
-          if (!task.is_completed) {
-            console.log(`🔄 Completing Task ${task.id} - ${task.title} for ${account.username}...`.blue);
-            await sleep(3000); // Wait 3 seconds before completing
+      case 3:
+        // Play Swipe Coin for all accounts
+        for (const account of accounts) {
+          console.log(`\n⏳ Playing Swipe Coin for ${account.username}`.yellow);
+          await performActionWithTokenRefresh(account, async (account) => {
             try {
-              const result = await completeTask(account.access_token, task.id);
-              if (result.is_completed) {
-                console.log(`✅ Task ${task.id} - ${task.title} Completed for ${account.username}.`.green);
+              if (await canPlaySwipeCoin(account.access_token)) {
+                console.log('🔄 Waiting 5 seconds before playing Swipe Coin...'.blue);
+                await sleep(5000);
+                console.log('🎮 Playing Swipe Coin. Wait 30 seconds to claim points...'.yellow);
+                await sleep(30000);
+                const coins = Math.floor(Math.random() * (950 - 400 + 1)) + 400;
+                const swipeCoinResult = await playSwipeCoin(account.access_token, coins);
+                if (swipeCoinResult) {
+                  const updatedUserInfo = await getUserInfo(account.access_token, account.user_id);
+                  account.rating = updatedUserInfo.rating;
+                  console.log(`✅ Swipe Coin played successfully for ${account.username}. Your points are now ${account.rating}`.green);
+                } else {
+                  console.log(`❌ Failed to play Swipe Coin for ${account.username}.`.red);
+                }
+              } else {
+                console.log(`⚠️  You cannot play Swipe Coin at this time for ${account.username}.`.red);
               }
             } catch (error) {
-              if (error.response && error.response.status === 400) {
-                console.log(`⚠️  The task ${task.id} - ${task.title} can't be completed for ${account.username}, please complete it manually`.red);
-              } else {
-                console.log(`❌ Error completing Task ${task.id} for ${account.username}: ${error.message}`.red);
-              }
+              handleGameError('Swipe Coin', error, account.username);
             }
-          } else {
-            console.log(`🔄 Task ${task.id} - ${task.title} is already completed for ${account.username}.`.yellow);
-          }
+          });
+          await sleep(1000); // Add 1-second delay between accounts
         }
-
-        // Get updated user info after completing tasks
-        const updatedUserInfo = await getUserInfo(account.access_token, account.user_id);
-        account.rating = updatedUserInfo.rating;
-        console.log(`✅ Your points are now: ${account.rating}`.green);
-
-      } catch (error) {
-        console.log(`❌ Error completing tasks for ${account.username}: ${error.message}`.red);
-      }
-    });
-    await sleep(1000); // Add 1-second delay between accounts
-  }
-  break;
+        break;
 
       case 4:
         // Play Durov Game for all accounts
@@ -298,6 +280,68 @@ case 3:
   }
 }
 
+// Function to complete tasks with interactions
+async function completeTasksWithInteractions(accounts) {
+  // For tasks that require interactions
+  let codeTasks = [];
+  const is_daily = false;
+
+  // First, fetch code tasks from one of the accounts
+  await performActionWithTokenRefresh(accounts[0], async (account) => {
+    try {
+      const tasks = await getTasks(account.access_token, is_daily);
+
+      for (const task of tasks) {
+        if (!task.is_completed && task.type === 'code') {
+          codeTasks.push(task);
+        }
+      }
+    } catch (error) {
+      console.log(`❌ Error fetching tasks: ${error.message}`.red);
+    }
+  });
+
+  if (codeTasks.length === 0) {
+    console.log('No code tasks to complete.'.yellow);
+    return;
+  }
+
+  // Process each code task
+  for (const task of codeTasks) {
+    console.log(`\nTask "${task.title}" (ID: ${task.id}) requires a code to complete.`.blue);
+    let codeInput = readlineSync.question(`👉 Please enter the code for task "${task.title}" (ID: ${task.id}): `.blue);
+
+    // Now, for each account, attempt to complete the task with the code
+    for (const account of accounts) {
+      console.log(`\nCompleting Task ${task.id} for ${account.username}`.yellow);
+
+      await performActionWithTokenRefresh(account, async (account) => {
+        try {
+          const payload = {
+            task_id: task.id,
+            code: codeInput,
+          };
+
+          await sleep(2000); // Wait 2 seconds before completing
+
+          const result = await completeTaskWithPayload(account.access_token, payload);
+          if (result.is_completed) {
+            console.log(`✅ Task ${task.id} - ${task.title} Completed for ${account.username}.`.green);
+          } else {
+            console.log(`❌ Task ${task.id} - ${task.title} not completed for ${account.username}.`.red);
+          }
+        } catch (error) {
+          if (error.response && error.response.status === 400) {
+            console.log(`❌ Error completing Task ${task.id} for ${account.username}: ${error.response.data.detail}`.red);
+          } else {
+            console.log(`❌ Error completing Task ${task.id} for ${account.username}: ${error.message}`.red);
+          }
+        }
+      });
+    }
+  }
+}
+
 // Main execution
 (async () => {
   clearConsole();
@@ -308,7 +352,7 @@ case 3:
 
   // Display welcome message after the banner
   console.log('👋 Hello! Welcome to the Major Client Bot'.yellow);
-  console.log('👑 Created by Naeaex - x.com/naeaex_dev - github.com/Naeaerc20'.yellow)
+  console.log('👑 Created by Naeaex - x.com/naeaex_dev - github.com/Naeaerc20'.yellow);
   console.log('⏳ We\'re fetching your data... Please wait\n'.yellow);
 
   try {
@@ -318,11 +362,11 @@ case 3:
     const accounts = [];
     const tokens = [];
 
-    // Initialize accounts with a delay of 2 seconds per account
+    // Initialize accounts with a delay of 0.5 seconds per account
     for (let i = 0; i < accountsInitData.length; i++) {
       const init_data = accountsInitData[i];
       try {
-        await sleep(500); // Wait 2 seconds before processing the next account
+        await sleep(500); // Wait 0.5 seconds before processing the next account
 
         const { access_token, user_id } = await getNewToken(init_data);
         tokens.push(access_token); // Save the token to tokens array
@@ -337,8 +381,7 @@ case 3:
           rating: userInfo.rating,
         });
 
-        // Adjusted output format
-        console.log(`✨ | ${i + 1} | NEW TOKEN GENERATED | ${userInfo.username} - ${userInfo.rating}`.green);
+        // Collect account data; no printing here
       } catch (error) {
         console.error(`Failed to initialize account ${i + 1} with init_data:`, init_data, 'Error:', error);
       }
@@ -352,11 +395,18 @@ case 3:
       return;
     }
 
+    // After initializing all accounts, print their data
+    console.log('✨ All accounts initialized successfully:'.green);
+    accounts.forEach((account) => {
+      console.log(`✨ | ${account.id} | NEW TOKEN GENERATED | ${account.username} - ${account.rating}`.green);
+    });
+
     // Display action menu
     const menuOptions = [
       '📝 Make Check In',
       '🎮 Play Games',
       '📝 Complete Tasks',
+      '📝 Complete Tasks with Interactions',
       '❌ Exit',
     ];
 
@@ -401,22 +451,29 @@ case 3:
             console.log(`\nCompleting Tasks for ${account.username}`.yellow);
             await performActionWithTokenRefresh(account, async (account) => {
               try {
-                const tasks = await getTasks(account.access_token);
+                const dailyTasks = await getTasks(account.access_token, true);
+                const regularTasks = await getTasks(account.access_token, false);
+                const tasks = [...dailyTasks, ...regularTasks];
+
                 for (const task of tasks) {
                   if (!task.is_completed) {
-                    console.log(`🔄 Completing Task ${task.id} - ${task.title} for ${account.username}...`.blue);
-                    await sleep(3000); // Wait 3 seconds before completing
-                    try {
-                      const result = await completeTask(account.access_token, task.id);
-                      if (result.is_completed) {
-                        console.log(`✅ Task ${task.id} - ${task.title} Completed for ${account.username}.`.green);
+                    if (task.type !== 'code') {
+                      console.log(`🔄 Completing Task ${task.id} - ${task.title} for ${account.username}...`.blue);
+                      await sleep(3000); // Wait 3 seconds before completing
+                      try {
+                        const result = await completeTask(account.access_token, task.id);
+                        if (result.is_completed) {
+                          console.log(`✅ Task ${task.id} - ${task.title} Completed for ${account.username}.`.green);
+                        }
+                      } catch (error) {
+                        if (error.response && error.response.status === 400) {
+                          console.log(`⚠️  The task ${task.id} - ${task.title} can't be completed for ${account.username}, please complete it manually`.red);
+                        } else {
+                          console.log(`❌ Error completing Task ${task.id} for ${account.username}: ${error.message}`.red);
+                        }
                       }
-                    } catch (error) {
-                      if (error.response && error.response.status === 400) {
-                        console.log(`⚠️  The task ${task.id} - ${task.title} can't be completed for ${account.username}, please complete it manually`.red);
-                      } else {
-                        console.log(`❌ Error completing Task ${task.id} for ${account.username}: ${error.message}`.red);
-                      }
+                    } else {
+                      console.log(`⚠️  Task ${task.id} - ${task.title} requires manual input. Please use 'Complete Tasks with Interactions' option.`.yellow);
                     }
                   } else {
                     console.log(`🔄 Task ${task.id} - ${task.title} is already completed for ${account.username}.`.yellow);
@@ -437,6 +494,11 @@ case 3:
           break;
 
         case 4:
+          // Complete Tasks with Interactions
+          await completeTasksWithInteractions(accounts);
+          break;
+
+        case 5:
           exit = true;
           console.log('👋 Exiting the application...'.yellow);
           break;

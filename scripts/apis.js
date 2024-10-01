@@ -38,10 +38,10 @@ async function performCheckIn(access_token) {
 
 /**
  * Función para obtener la lista de tareas.
- * Realiza una solicitud GET a https://major.bot/api/tasks/?is_daily=false
+ * Realiza una solicitud GET a https://major.bot/api/tasks/?is_daily=<is_daily>
  */
-async function getTasks(access_token) {
-  const response = await axios.get('https://major.bot/api/tasks/?is_daily=false', {
+async function getTasks(access_token, is_daily = false) {
+  const response = await axios.get(`https://major.bot/api/tasks/?is_daily=${is_daily}`, {
     headers: { Authorization: `Bearer ${access_token}` },
   });
   return response.data;
@@ -56,6 +56,20 @@ async function completeTask(access_token, task_id) {
   const response = await axios.post(
     'https://major.bot/api/tasks/',
     { task_id },
+    { headers: { Authorization: `Bearer ${access_token}` } }
+  );
+  return response.data;
+}
+
+/**
+ * Función para completar una tarea por ID con payload adicional.
+ * Realiza una solicitud POST a https://major.bot/api/tasks/
+ * Payload: { task_id: number, ...payload }
+ */
+async function completeTaskWithPayload(access_token, payload) {
+  const response = await axios.post(
+    'https://major.bot/api/tasks/',
+    payload,
     { headers: { Authorization: `Bearer ${access_token}` } }
   );
   return response.data;
@@ -168,6 +182,7 @@ module.exports = {
   performCheckIn,
   getTasks,
   completeTask,
+  completeTaskWithPayload,
   canPlayHoldTheCoin,
   playHoldTheCoin,
   canPlayRoulette,
