@@ -72,7 +72,7 @@ function updateTokenInFile(index, newToken) {
   fs.writeFileSync(bearerAuthDataPath, JSON.stringify(tokens, null, 2));
 }
 
-// Handle game errors
+// Function to handle game errors
 function handleGameError(gameName, error, username) {
   if (error.response && error.response.data && error.response.data.detail) {
     const detail = error.response.data.detail;
@@ -282,44 +282,60 @@ async function playGamesSubMenu(accounts) {
 
 // Function to complete tasks with interactions
 async function completeTasksWithInteractions(accounts) {
-  // For tasks that require interactions
-  let codeTasks = [];
-  const is_daily = false;
+  // To store tasks that require code, grouped by task_id
+  let codeTasksById = {};
 
-  // First, fetch code tasks from one of the accounts
-  await performActionWithTokenRefresh(accounts[0], async (account) => {
-    try {
-      const tasks = await getTasks(account.access_token, is_daily);
+  // Fetch tasks from all accounts
+  for (const account of accounts) {
+    await performActionWithTokenRefresh(account, async (account) => {
+      try {
+        const dailyTasks = await getTasks(account.access_token, true);
+        const regularTasks = await getTasks(account.access_token, false);
+        const tasks = [...dailyTasks, ...regularTasks];
 
-      for (const task of tasks) {
-        if (!task.is_completed && task.type === 'code') {
-          codeTasks.push(task);
+        for (const task of tasks) {
+          if (!task.is_completed && task.type === 'code') {
+            // If we haven't registered this task yet, add it
+            if (!codeTasksById[task.id]) {
+              codeTasksById[task.id] = {
+                task: task,
+                accounts: [],
+              };
+            }
+            // Add the account to the list of accounts that have this task
+            codeTasksById[task.id].accounts.push(account);
+          }
         }
+      } catch (error) {
+        console.log(`❌ Error fetching tasks for ${account.username}: ${error.message}`.red);
       }
-    } catch (error) {
-      console.log(`❌ Error fetching tasks: ${error.message}`.red);
-    }
-  });
+    });
+  }
 
-  if (codeTasks.length === 0) {
+  // Check if there are code tasks to complete
+  const taskIds = Object.keys(codeTasksById);
+  if (taskIds.length === 0) {
     console.log('No code tasks to complete.'.yellow);
     return;
   }
 
   // Process each code task
-  for (const task of codeTasks) {
+  for (const taskId of taskIds) {
+    const { task, accounts: taskAccounts } = codeTasksById[taskId];
     console.log(`\nTask "${task.title}" (ID: ${task.id}) requires a code to complete.`.blue);
     let codeInput = readlineSync.question(`👉 Please enter the code for task "${task.title}" (ID: ${task.id}): `.blue);
 
-    // Now, for each account, attempt to complete the task with the code
-    for (const account of accounts) {
+    // Attempt to complete the task for each account that has it
+    for (const account of taskAccounts) {
       console.log(`\nCompleting Task ${task.id} for ${account.username}`.yellow);
 
       await performActionWithTokenRefresh(account, async (account) => {
         try {
           const payload = {
             task_id: task.id,
-            code: codeInput,
+            payload: {
+              code: codeInput,
+            },
           };
 
           await sleep(2000); // Wait 2 seconds before completing
