@@ -23,18 +23,22 @@ const readlineSync = require('readline-sync');
 const colors = require('colors');
 const clearConsole = require('clear-console');
 const figlet = require('figlet');
+const { SocksProxyAgent } = require('socks-proxy-agent'); // Corrected import
+const axios = require('axios');
+const Table = require('cli-table3'); // Import cli-table3
 
 // Paths to data files
 const accountsDataPath = path.join(__dirname, 'accounts.json');
 const bearerAuthDataPath = path.join(__dirname, 'bearerAuthData.json');
+const proxiesDataPath = path.join(__dirname, 'proxies.txt');
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // Function to get a new Bearer Token and User ID
-async function getNewToken(init_data) {
-  const authData = await getBearerToken(init_data);
+async function getNewToken(init_data, axiosConfig) {
+  const authData = await getBearerToken(init_data, axiosConfig);
   const access_token = authData.access_token;
   const user_id = authData.user_id;
   return { access_token, user_id };
@@ -42,21 +46,21 @@ async function getNewToken(init_data) {
 
 // Function to perform an action and handle token refresh if a 401 error occurs
 async function performActionWithTokenRefresh(account, actionFunction) {
-  let { access_token, user_id, init_data } = account;
+  let { access_token, user_id, init_data, axiosConfig } = account;
 
   try {
     await actionFunction(account);
   } catch (error) {
     if (error.response && error.response.status === 401) {
       console.log(`⏳ Token expired or invalid for user ${account.username}. Generating a new token...`.yellow);
-      const newTokenData = await getNewToken(init_data);
+      const newTokenData = await getNewToken(init_data, axiosConfig);
       access_token = newTokenData.access_token;
       user_id = newTokenData.user_id;
       account.access_token = access_token;
       account.user_id = user_id;
 
       // Update the token in 'bearerAuthData.json'
-      updateTokenInFile(account.id - 1, access_token);
+      updateBearerDataInFile(account.id - 1, access_token, account.proxy, user_id);
 
       await actionFunction(account);
     } else {
@@ -65,11 +69,20 @@ async function performActionWithTokenRefresh(account, actionFunction) {
   }
 }
 
-// Function to update token in 'bearerAuthData.json'
-function updateTokenInFile(index, newToken) {
-  const tokens = JSON.parse(fs.readFileSync(bearerAuthDataPath, 'utf8'));
-  tokens[index] = newToken;
-  fs.writeFileSync(bearerAuthDataPath, JSON.stringify(tokens, null, 2));
+// Function to update bearer data in 'bearerAuthData.json'
+function updateBearerDataInFile(index, newToken, proxy, user_id) {
+  let bearerData = [];
+  if (fs.existsSync(bearerAuthDataPath)) {
+    bearerData = JSON.parse(fs.readFileSync(bearerAuthDataPath, 'utf8'));
+  }
+
+  bearerData[index] = {
+    id: index + 1,
+    access_token: newToken,
+    proxy: proxy,
+    user_id: user_id,
+  };
+  fs.writeFileSync(bearerAuthDataPath, JSON.stringify(bearerData, null, 2));
 }
 
 // Function to handle game errors
@@ -104,7 +117,18 @@ function handleGameError(gameName, error, username) {
   }
 }
 
-// Play Games submenu function
+// Function to get IP and geolocation of the proxy
+async function getProxyInfo(axiosConfig) {
+  try {
+    const response = await axios.get('https://ipinfo.io/json', axiosConfig);
+    return response.data;
+  } catch (error) {
+    console.log('❌ Failed to retrieve proxy IP and geolocation.'.red);
+    return null;
+  }
+}
+
+// Play Games submenu function (ensure to pass account.axiosConfig)
 async function playGamesSubMenu(accounts) {
   const gameOptions = [
     '💰 Hold The Coin',
@@ -130,15 +154,15 @@ async function playGamesSubMenu(accounts) {
           console.log(`\n⏳ Playing Hold The Coin for ${account.username}`.yellow);
           await performActionWithTokenRefresh(account, async (account) => {
             try {
-              if (await canPlayHoldTheCoin(account.access_token)) {
+              if (await canPlayHoldTheCoin(account.access_token, account.axiosConfig)) {
                 console.log('🔄 Waiting 5 seconds before playing Hold The Coin...'.blue);
                 await sleep(5000);
                 console.log('🎮 Playing Hold The Coin. Wait 1 minute to claim points...'.yellow);
                 await sleep(60000);
                 const coins = Math.floor(Math.random() * (950 - 400 + 1)) + 400;
-                const holdTheCoinResult = await playHoldTheCoin(account.access_token, coins);
+                const holdTheCoinResult = await playHoldTheCoin(account.access_token, coins, account.axiosConfig);
                 if (holdTheCoinResult) {
-                  const updatedUserInfo = await getUserInfo(account.access_token, account.user_id);
+                  const updatedUserInfo = await getUserInfo(account.access_token, account.user_id, account.axiosConfig);
                   account.rating = updatedUserInfo.rating;
                   console.log(`✅ Hold The Coin played successfully for ${account.username}. Your points are now ${account.rating}`.green);
                 } else {
@@ -161,7 +185,7 @@ async function playGamesSubMenu(accounts) {
           console.log(`\n⏳ Playing Roulette for ${account.username}`.yellow);
           await performActionWithTokenRefresh(account, async (account) => {
             try {
-              if (await canPlayRoulette(account.access_token)) {
+              if (await canPlayRoulette(account.access_token, account.axiosConfig)) {
                 console.log('🔄 Waiting 5 seconds before playing Roulette...'.blue);
                 await sleep(5000);
                 console.log('🎮 Playing Roulette. Wait 10 seconds to claim points...'.yellow);
@@ -175,8 +199,8 @@ async function playGamesSubMenu(accounts) {
                   { rating_award: 10000, result: 6 },
                 ];
                 const randomOption = options[Math.floor(Math.random() * options.length)];
-                const rouletteResult = await playRoulette(account.access_token, randomOption.rating_award, randomOption.result);
-                const updatedUserInfo = await getUserInfo(account.access_token, account.user_id);
+                const rouletteResult = await playRoulette(account.access_token, randomOption.rating_award, randomOption.result, account.axiosConfig);
+                const updatedUserInfo = await getUserInfo(account.access_token, account.user_id, account.axiosConfig);
                 account.rating = updatedUserInfo.rating;
                 console.log(`✅ Roulette played successfully for ${account.username}. Your points are now ${account.rating}`.green);
               } else {
@@ -196,15 +220,15 @@ async function playGamesSubMenu(accounts) {
           console.log(`\n⏳ Playing Swipe Coin for ${account.username}`.yellow);
           await performActionWithTokenRefresh(account, async (account) => {
             try {
-              if (await canPlaySwipeCoin(account.access_token)) {
+              if (await canPlaySwipeCoin(account.access_token, account.axiosConfig)) {
                 console.log('🔄 Waiting 5 seconds before playing Swipe Coin...'.blue);
                 await sleep(5000);
-                console.log('🎮 Playing Swipe Coin. Wait 30 seconds to claim points...'.yellow);
-                await sleep(30000);
+                console.log('🎮 Playing Swipe Coin. Wait 1 minute to claim points...'.yellow);
+                await sleep(60000);
                 const coins = Math.floor(Math.random() * (950 - 400 + 1)) + 400;
-                const swipeCoinResult = await playSwipeCoin(account.access_token, coins);
+                const swipeCoinResult = await playSwipeCoin(account.access_token, coins, account.axiosConfig);
                 if (swipeCoinResult) {
-                  const updatedUserInfo = await getUserInfo(account.access_token, account.user_id);
+                  const updatedUserInfo = await getUserInfo(account.access_token, account.user_id, account.axiosConfig);
                   account.rating = updatedUserInfo.rating;
                   console.log(`✅ Swipe Coin played successfully for ${account.username}. Your points are now ${account.rating}`.green);
                 } else {
@@ -230,7 +254,7 @@ async function playGamesSubMenu(accounts) {
           console.log(`\n⏳ Playing Durov Game for ${account.username}`.yellow);
           await performActionWithTokenRefresh(account, async (account) => {
             try {
-              if (await canPlayDurovGame(account.access_token)) {
+              if (await canPlayDurovGame(account.access_token, account.axiosConfig)) {
                 if (!durovChoices || durovFailed) {
                   // Request choices from the user
                   console.log('👉 Please enter your choices for Durov Game.'.blue);
@@ -246,10 +270,10 @@ async function playGamesSubMenu(accounts) {
                 console.log('🎮 Playing Durov Game... Wait 5 seconds to claim points'.yellow);
                 await sleep(5000);
 
-                const durovResult = await playDurovGame(account.access_token, durovChoices);
+                const durovResult = await playDurovGame(account.access_token, durovChoices, account.axiosConfig);
 
                 if (durovResult.correct && durovResult.correct.length === 4) {
-                  const updatedUserInfo = await getUserInfo(account.access_token, account.user_id);
+                  const updatedUserInfo = await getUserInfo(account.access_token, account.user_id, account.axiosConfig);
                   account.rating = updatedUserInfo.rating;
                   console.log(`✅ Durov Game successfully played for ${account.username} - Your points are now ${account.rating}`.green);
                   durovFailed = false; // Reset the flag
@@ -264,7 +288,7 @@ async function playGamesSubMenu(accounts) {
               handleGameError('Durov Game', error, account.username);
             }
           });
-          await sleep(2000); // Wait 2 seconds before rotating to the next account
+          await sleep(2000); // Wait 2 seconds before moving to the next account
         }
         break;
 
@@ -280,17 +304,17 @@ async function playGamesSubMenu(accounts) {
   }
 }
 
-// Function to complete tasks with interactions
+// Function to complete tasks with interactions (ensure to pass account.axiosConfig)
 async function completeTasksWithInteractions(accounts) {
   // To store tasks that require code, grouped by task_id
   let codeTasksById = {};
 
-  // Fetch tasks from all accounts
+  // Get tasks from all accounts
   for (const account of accounts) {
     await performActionWithTokenRefresh(account, async (account) => {
       try {
-        const dailyTasks = await getTasks(account.access_token, true);
-        const regularTasks = await getTasks(account.access_token, false);
+        const dailyTasks = await getTasks(account.access_token, true, account.axiosConfig);
+        const regularTasks = await getTasks(account.access_token, false, account.axiosConfig);
         const tasks = [...dailyTasks, ...regularTasks];
 
         for (const task of tasks) {
@@ -338,9 +362,9 @@ async function completeTasksWithInteractions(accounts) {
             },
           };
 
-          await sleep(2000); // Wait 2 seconds before completing
+          await sleep(800); // Wait 0.8 seconds before completing
 
-          const result = await completeTaskWithPayload(account.access_token, payload);
+          const result = await completeTaskWithPayload(account.access_token, payload, account.axiosConfig);
           if (result.is_completed) {
             console.log(`✅ Task ${task.id} - ${task.title} Completed for ${account.username}.`.green);
           } else {
@@ -375,47 +399,101 @@ async function completeTasksWithInteractions(accounts) {
     // Read accounts.json
     const accountsInitData = JSON.parse(fs.readFileSync(accountsDataPath, 'utf8')); // Array of init_data strings
 
+    // Read proxies.txt
+    const proxies = fs.readFileSync(proxiesDataPath, 'utf8').split('\n').filter(Boolean);
+
+    // Read bearerAuthData.json if exists
+    let bearerData = [];
+    if (fs.existsSync(bearerAuthDataPath)) {
+      bearerData = JSON.parse(fs.readFileSync(bearerAuthDataPath, 'utf8'));
+    }
+
     const accounts = [];
-    const tokens = [];
 
     // Initialize accounts with a delay of 0.5 seconds per account
     for (let i = 0; i < accountsInitData.length; i++) {
       const init_data = accountsInitData[i];
+      const proxy = proxies[i] || null; // Use proxy from list or null if not available
+
       try {
         await sleep(500); // Wait 0.5 seconds before processing the next account
 
-        const { access_token, user_id } = await getNewToken(init_data);
-        tokens.push(access_token); // Save the token to tokens array
+        // Create proxy agent if proxy is available
+        let axiosConfig = {};
+        if (proxy) {
+          const proxyAgent = new SocksProxyAgent(proxy);
+          axiosConfig = {
+            httpAgent: proxyAgent,
+            httpsAgent: proxyAgent,
+          };
+        }
 
-        const userInfo = await getUserInfo(access_token, user_id);
+        // Get proxy IP and geolocation before any request
+        const proxyInfo = await getProxyInfo(axiosConfig);
+        let ip = 'N/A';
+        let country = 'N/A';
+        if (proxyInfo) {
+          ip = proxyInfo.ip || 'N/A';
+          country = proxyInfo.country || 'N/A';
+        }
+
+        let access_token, user_id;
+
+        // Check if bearerData has access_token for this account
+        if (bearerData[i] && bearerData[i].access_token && bearerData[i].proxy === proxy) {
+          access_token = bearerData[i].access_token;
+          user_id = bearerData[i].user_id;
+        } else {
+          const tokenData = await getNewToken(init_data, axiosConfig);
+          access_token = tokenData.access_token;
+          user_id = tokenData.user_id;
+
+          // Save access_token, proxy, and user_id to bearerAuthData.json
+          updateBearerDataInFile(i, access_token, proxy, user_id);
+        }
+
+        const userInfo = await getUserInfo(access_token, user_id, axiosConfig);
         accounts.push({
           id: i + 1,
           init_data,
           access_token,
           user_id,
-          username: userInfo.username,
-          rating: userInfo.rating,
+          username: userInfo.username || 'N/A',
+          rating: userInfo.rating || 0,
+          proxy,
+          ip,
+          country,
+          axiosConfig,
         });
 
-        // Collect account data; no printing here
       } catch (error) {
         console.error(`Failed to initialize account ${i + 1} with init_data:`, init_data, 'Error:', error);
       }
     }
-
-    // Save the tokens to 'bearerAuthData.json'
-    fs.writeFileSync(bearerAuthDataPath, JSON.stringify(tokens, null, 2));
 
     if (accounts.length === 0) {
       console.log('No accounts initialized. Exiting...'.red);
       return;
     }
 
-    // After initializing all accounts, print their data
-    console.log('✨ All accounts initialized successfully:'.green);
-    accounts.forEach((account) => {
-      console.log(`✨ | ${account.id} | NEW TOKEN GENERATED | ${account.username} - ${account.rating}`.green);
+    // After initializing all accounts, display their data in a table
+    const table = new Table({
+      head: ['ID', 'USERNAME', 'POINTS', 'IP', 'LOCATION'],
+      colWidths: [5, 20, 10, 18, 15],
+      style: { head: ['cyan'] },
     });
+
+    accounts.forEach((account) => {
+      table.push([
+        account.id,
+        account.username,
+        account.rating,
+        account.ip,
+        account.country,
+      ]);
+    });
+
+    console.log(table.toString());
 
     // Display action menu
     const menuOptions = [
@@ -442,7 +520,7 @@ async function completeTasksWithInteractions(accounts) {
             console.log(`\n🔄 Performing Check-In for ${account.username}`.yellow);
             await performActionWithTokenRefresh(account, async (account) => {
               try {
-                const checkInResult = await performCheckIn(account.access_token);
+                const checkInResult = await performCheckIn(account.access_token, account.axiosConfig);
                 if (checkInResult.is_allowed && checkInResult.is_increased) {
                   console.log(`✅ Check-In performed successfully for ${account.username}.`.green);
                 } else {
@@ -467,8 +545,8 @@ async function completeTasksWithInteractions(accounts) {
             console.log(`\nCompleting Tasks for ${account.username}`.yellow);
             await performActionWithTokenRefresh(account, async (account) => {
               try {
-                const dailyTasks = await getTasks(account.access_token, true);
-                const regularTasks = await getTasks(account.access_token, false);
+                const dailyTasks = await getTasks(account.access_token, true, account.axiosConfig);
+                const regularTasks = await getTasks(account.access_token, false, account.axiosConfig);
                 const tasks = [...dailyTasks, ...regularTasks];
 
                 for (const task of tasks) {
@@ -477,7 +555,7 @@ async function completeTasksWithInteractions(accounts) {
                       console.log(`🔄 Completing Task ${task.id} - ${task.title} for ${account.username}...`.blue);
                       await sleep(3000); // Wait 3 seconds before completing
                       try {
-                        const result = await completeTask(account.access_token, task.id);
+                        const result = await completeTask(account.access_token, task.id, account.axiosConfig);
                         if (result.is_completed) {
                           console.log(`✅ Task ${task.id} - ${task.title} Completed for ${account.username}.`.green);
                         }
@@ -497,7 +575,7 @@ async function completeTasksWithInteractions(accounts) {
                 }
 
                 // Get updated user info after completing tasks
-                const updatedUserInfo = await getUserInfo(account.access_token, account.user_id);
+                const updatedUserInfo = await getUserInfo(account.access_token, account.user_id, account.axiosConfig);
                 account.rating = updatedUserInfo.rating;
                 console.log(`✅ Your points are now: ${account.rating}`.green);
 
